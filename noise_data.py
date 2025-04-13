@@ -122,6 +122,16 @@ class HDF5Dataset(Dataset):
         self.rank = rank
         self.world_size = world_size
 
+
+         # --- add check for cutmix validity ---
+        if self.cutmix > 0 and len(self.noise_types) <= 1:
+            raise ValueError(
+                f"Cutmix augmentation requires more than one noise type, but only "
+                f"{len(self.noise_types)} was provided (noise_types: {self.noise_types}). "
+                f"Please set cutmix=0 in the dataset configuration."
+            )
+        # -------------------------------------
+
         # look for all files : noise_separate_ptX.hdf5
         ds_list = [f for f in os.listdir(data_dir) if f.startswith('onenoise_dataset_part') and f.endswith('.hdf5')]
         datapacks = [h5py.File(os.path.join(data_dir, f), 'r') for f in ds_list]
