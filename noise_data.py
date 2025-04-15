@@ -108,7 +108,9 @@ class HDF5Dataset(Dataset):
                  cutmix_rot=True,
                  rank=0,
                  world_size=1,
-                 max_samples=None
+                 max_samples=None,
+                 force_rgb=False,
+                 normalize_to_neg_one_pos_one=False
                 ) -> None:
         super().__init__()
         self.H = 256
@@ -121,9 +123,17 @@ class HDF5Dataset(Dataset):
         self.cutmix_rot = cutmix_rot
         self.rank = rank
         self.world_size = world_size
+        self.force_rgb = force_rgb
 
+        # matches the normalization used in the original FFHQ experiments
+        # via transforms.Normalize(0.5, 0.5) in datasets/wrapper_cae.py (around L29).
+        if normalize_to_neg_one_pos_one:
+            #this is greyscale, so we only need one value in our tuples
+            self.normalize_transform = T.Normalize((0.5,), (0.5,))
+        else:
+            self.normalize_transform = None
 
-         # --- add check for cutmix validity ---
+        # --- add check for cutmix validity ---
         if self.cutmix > 0 and len(self.noise_types) <= 1:
             raise ValueError(
                 f"Cutmix augmentation requires more than one noise type, but only "
@@ -133,10 +143,13 @@ class HDF5Dataset(Dataset):
         # -------------------------------------
 
         # look for all files : noise_separate_ptX.hdf5
-        ds_list = [f for f in os.listdir(data_dir) if f.startswith('onenoise_dataset_part') and f.endswith('.hdf5')]
+        ds_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_separate') and f.endswith('.hdf5')]
         datapacks = [h5py.File(os.path.join(data_dir, f), 'r') for f in ds_list]
         
         nimages_per_type = datapacks[0].attrs['num_images_per_type'] * len(datapacks)
+        # # TODO: debug, change this
+        # nimages = min(len(noise_types) * nimages_per_type,50)
+        # nimages_per_type = nimages // len(noise_types)
         nimages = len(noise_types) * nimages_per_type
 
         # separated data format:
@@ -147,7 +160,8 @@ class HDF5Dataset(Dataset):
         print('Loading noise images...')
         for i, ntype in enumerate(noise_types):
             print(f'loading {ntype} (', i+1, '/', len(noise_types), ')')
-            print([dp[ntype].shape for dp in datapacks])
+            # print(f"DEBUG WARNING: only loading {self.data.shape} out of a total of {[dp[ntype].shape for dp in datapacks]} for {ntype}")
+            print(f"loading {self.data.shape} out of a total of {nimages} for {ntype}")
             # concat images from all datapacks for each noise type:
             l1 = i * nimages_per_type // world_size
             r1 = (i+1) * nimages_per_type // world_size
@@ -179,7 +193,7 @@ class HDF5Dataset(Dataset):
         self.data_max = self.data.max().to(dtype=torch.float) / 255.
 
         # Labels (already preprocessed):
-        sbsparams_list = [f for f in os.listdir(data_dir) if f.startswith('onenoise_dataset_parameters_part') and f.endswith('.hdf5')]
+        sbsparams_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_sbsparams') and f.endswith('.hdf5')]
         sbsparams_ds = [h5py.File(os.path.join(data_dir, f), 'r') for f in sbsparams_list]
 
         self.sbsparams = np.empty((nimages // world_size, sbsparams_ds[0].attrs['num_params']), dtype=np.float32)
@@ -217,5 +231,12 @@ class HDF5Dataset(Dataset):
             cls_labels = torch.nn.functional.one_hot(cls_labels.long(), num_classes=len(self.noise_types)).float() # (num_classes,)
             cls_labels = cls_labels.unsqueeze(1).unsqueeze(2).expand(-1, imgs.shape[-2], imgs.shape[-1])
             sbsparams = sbsparams.unsqueeze(1).unsqueeze(2).expand(-1, imgs.shape[-2], imgs.shape[-1])
-        
+
+        if self.normalize_transform is not None:
+            imgs = self.normalize_transform(imgs)
+
+        # ensure image is 3-channel for compatibility with VQGAN
+        if self.force_rgb and imgs.shape[0] == 1: # <-- Check force_rgb flag
+            imgs = imgs.repeat(3, 1, 1)
+
         return imgs, cls_labels, sbsparams
