@@ -72,7 +72,9 @@ class Trainer(object):
         rank = self.accelerator.process_index
         print(f"world_size: {world_size}, rank: {rank}")
 
-        self.create_dataloader(config, rank, world_size, train_batch_size)
+        self.use_latents = config.latent_dir is not None
+
+        self.create_dataloader(config, rank, world_size, train_batch_size, self.use_latents)
         self.create_optimizer(config)
 
         self.results_folder = Path(results_folder)
@@ -103,22 +105,28 @@ class Trainer(object):
         elif config.optim == 'adamw':
             self.opt = torch.optim.AdamW(self.model.parameters(), lr=config.lr, betas=(config.beta1, config.beta2))
 
-    def create_dataloader(self, config, rank, world_size, batch_size):
+    def create_dataloader(self, config, rank, world_size, batch_size, use_latents=False):
         '''
         Split the dataset across all processes. Since the dataset is large this should be fine.
         '''
+        # determine data directory and latent mode based on config
+        data_path = config.latent_dir if use_latents else config.data_dir
+
         if config.dry_run: # This simulates a small dataset for debugging purposes
             world_size = 4096
 
         self.ds = HDF5Dataset(
             noise_types=config.noise_types,
-            data_dir=config.data_dir,
+            data_dir=data_path,
             augment=True,
             cutmix=config.cutmix,
             cutmix_prob=config.cutmix_prob,
             cutmix_rot=config.cutmix_rot,
             rank=rank,
             world_size=world_size,
+            is_latent=use_latents,
+            normalize_to_neg_one_pos_one=config.get('normalize_to_neg_one_pos_one', False),
+            force_rgb=config.get('force_rgb', False)
         )
 
         self.dl = torch.utils.data.DataLoader(

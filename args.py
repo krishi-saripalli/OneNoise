@@ -16,6 +16,7 @@ args = argparse.ArgumentParser()
 args.add_argument('--dry_run', type=str2bool, default=False,        help='Uses a tiny amount of data during training to check if everything is working')
 args.add_argument('--model_config', type=str, default='tiny',       help='Model configuration (extra_tiny, tiny, medium, large)')
 args.add_argument('--data_dir', type=str, default='./data')
+args.add_argument('--latent_dir', type=str, default=None,           help='Directory for pre-computed latent HDF5 files. If set, overrides --data_dir.')
 args.add_argument('--out_dir', type=str, default='./results')
 args.add_argument('--exp_name', type=str, default=None) # will be auto generated if not provided
 args.add_argument('--image_size', type=int, default=256)

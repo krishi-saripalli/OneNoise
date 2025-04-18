@@ -110,7 +110,8 @@ class HDF5Dataset(Dataset):
                  world_size=1,
                  max_samples=None,
                  force_rgb=False,
-                 normalize_to_neg_one_pos_one=False
+                 normalize_to_neg_one_pos_one=False,
+                 is_latent=False
                 ) -> None:
         super().__init__()
         self.H = 256
@@ -123,6 +124,7 @@ class HDF5Dataset(Dataset):
         self.cutmix_rot = cutmix_rot
         self.rank = rank
         self.world_size = world_size
+        self.is_latent = is_latent
         self.force_rgb = force_rgb
 
         # matches the normalization used in the original FFHQ experiments
@@ -142,18 +144,25 @@ class HDF5Dataset(Dataset):
             )
         # -------------------------------------
 
-        # look for all files : noise_separate_ptX.hdf5
-        ds_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_separate') and f.endswith('.hdf5')]
+        ds_list = None
+        if self.is_latent:
+            ds_list = [f for f in os.listdir(data_dir) if f.startswith('latent') and f.endswith('.hdf5')]
+        else:
+            # look for all files : noise_separate_ptX.hdf5
+            ds_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_separate') and f.endswith('.hdf5')]
+
+        #TODO: when the latent dataset is created, we need to make sure we have the same metadata as the image dataset
         datapacks = [h5py.File(os.path.join(data_dir, f), 'r') for f in ds_list]
-        
         nimages_per_type = datapacks[0].attrs['num_images_per_type'] * len(datapacks)
-        # # TODO: debug, change this
-        # nimages = min(len(noise_types) * nimages_per_type,50)
-        # nimages_per_type = nimages // len(noise_types)
         nimages = len(noise_types) * nimages_per_type
 
-        # separated data format:
-        self.data = np.empty((nimages // world_size, self.H, self.W), dtype=np.uint8)
+        #TODO: remove hardcoded vals, make the shape part of the config
+        dtype = np.float32 if self.is_latent else np.uint8
+        latent_channels = 3 # Assuming latent has 3 channels
+        latent_H, latent_W = (64, 64) # Assuming latent spatial size
+        shape = (nimages // world_size, latent_channels, latent_H, latent_W) if self.is_latent else (nimages // world_size, self.H, self.W)
+        self.data = np.empty(shape, dtype=dtype)
+
         self.cls_labels = np.empty((nimages // world_size), dtype=np.int32)
 
         print(self.data.shape)
@@ -173,9 +182,10 @@ class HDF5Dataset(Dataset):
         for dp in datapacks:
             dp.close()
 
-        self.data = torch.from_numpy(self.data) # will retain uint8 dtype
-        self.data = self.data.unsqueeze(1) # add channel dimension
-        
+        self.data = torch.from_numpy(self.data)
+        if not self.is_latent:
+             self.data = self.data.unsqueeze(1) # add channel dimension only for non-latent (single channel uint8)
+
         if max_samples is not None:
             self.data = self.data[:max_samples]
             self.cls_labels = self.cls_labels[:max_samples]
@@ -220,23 +230,28 @@ class HDF5Dataset(Dataset):
         return self.length
 
     def __getitem__(self, idx, cutmix_off=False):
-        imgs = self.augment(self.data[idx])
-        imgs = HDF5_batch_preproc(imgs, device='cpu', normalize_fn=self.normalize) # (1, H, W)
+        if self.is_latent:
+            data_item = self.data[idx]
+        else:
+            data_item = self.augment(self.data[idx])
+            data_item = HDF5_batch_preproc(data_item, device='cpu', normalize_fn=self.normalize) # (1, H, W)
+
         cls_labels = self.cls_labels[idx]   # (1,)
         sbsparams = self.sbsparams[idx]     # (num_params,)
-        if self.cutmix > 0 and not cutmix_off and random.random() < self.cutmix_prob:
-            return cutmix_augmentation(imgs, cls_labels, sbsparams, self.cutmix, self, rot=self.cutmix_rot)
+        if not self.is_latent and self.cutmix > 0 and not cutmix_off and random.random() < self.cutmix_prob:
+            return cutmix_augmentation(data_item, cls_labels, sbsparams, self.cutmix, self, rot=self.cutmix_rot)
         else:
             # expand cls_labels and sbsparams to be spatial tensor:
             cls_labels = torch.nn.functional.one_hot(cls_labels.long(), num_classes=len(self.noise_types)).float() # (num_classes,)
-            cls_labels = cls_labels.unsqueeze(1).unsqueeze(2).expand(-1, imgs.shape[-2], imgs.shape[-1])
-            sbsparams = sbsparams.unsqueeze(1).unsqueeze(2).expand(-1, imgs.shape[-2], imgs.shape[-1])
+            cls_labels = cls_labels.unsqueeze(1).unsqueeze(2).expand(-1, data_item.shape[-2], data_item.shape[-1])
+            sbsparams = sbsparams.unsqueeze(1).unsqueeze(2).expand(-1, data_item.shape[-2], data_item.shape[-1])
 
-        if self.normalize_transform is not None:
-            imgs = self.normalize_transform(imgs)
+        if not self.is_latent:
+            if self.normalize_transform is not None:
+                data_item = self.normalize_transform(data_item)
 
-        # ensure image is 3-channel for compatibility with VQGAN
-        if self.force_rgb and imgs.shape[0] == 1: # <-- Check force_rgb flag
-            imgs = imgs.repeat(3, 1, 1)
+            # ensure image is 3-channel for compatibility with VQGAN
+            if self.force_rgb and data_item.shape[0] == 1: # <-- Check force_rgb flag
+                data_item = data_item.repeat(3, 1, 1)
 
-        return imgs, cls_labels, sbsparams
+        return data_item, cls_labels, sbsparams
