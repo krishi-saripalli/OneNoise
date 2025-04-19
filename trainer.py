@@ -109,23 +109,36 @@ class Trainer(object):
         '''
         Split the dataset across all processes. Since the dataset is large this should be fine.
         '''
-        # determine data directory and latent mode based on config
-        data_path = config.latent_dir if use_latents else config.data_dir
+        is_latent_mode = config.latent_diffusion
+        if is_latent_mode:
+            print("INFO: Running in latent diffusion mode.")
+            if config.latent_dataset_path is None:
+                raise ValueError("Latent diffusion mode requires --latent_dataset_path to be set.")
+            data_path = config.latent_dataset_path
+            if config.cutmix > 0:
+                print("WARN: Cutmix is enabled but not supported in latent diffusion mode. Disabling cutmix.")
+                config.cutmix = 0
+            # TOOD: should we normalize the latents?
+            normalize_latents = False
+        else:
+            print("INFO: Running in standard (pixel) diffusion mode.")
+            data_path = config.data_dir
+            normalize_latents = config.get('normalize_to_neg_one_pos_one', False)
 
         if config.dry_run: # This simulates a small dataset for debugging purposes
             world_size = 4096
 
         self.ds = HDF5Dataset(
             noise_types=config.noise_types,
-            data_dir=data_path,
+            data_dir=data_path, 
             augment=True,
-            cutmix=config.cutmix,
+            cutmix=config.cutmix, 
             cutmix_prob=config.cutmix_prob,
             cutmix_rot=config.cutmix_rot,
             rank=rank,
             world_size=world_size,
-            is_latent=use_latents,
-            normalize_to_neg_one_pos_one=config.get('normalize_to_neg_one_pos_one', False),
+            is_latent=is_latent_mode,
+            normalize_to_neg_one_pos_one=normalize_latents,
             force_rgb=config.get('force_rgb', False)
         )
 

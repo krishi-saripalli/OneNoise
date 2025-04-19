@@ -18,6 +18,13 @@ args.add_argument('--model_config', type=str, default='tiny',       help='Model 
 args.add_argument('--data_dir', type=str, default='./data')
 args.add_argument('--latent_dir', type=str, default=None,           help='Directory for pre-computed latent HDF5 files. If set, overrides --data_dir.')
 args.add_argument('--out_dir', type=str, default='./results')
+
+# Latent Diffusion Arguments
+args.add_argument('--latent_diffusion', action='store_true', help='Enable latent diffusion mode.')
+args.add_argument('--latent_dataset_path', type=str, default=None, help='Path to the HDF5 file containing pre-computed latents (required if --latent_diffusion is set).')
+args.add_argument('--ae_config_path', type=str, default=None, help='Path to the AE model config YAML (required if --latent_diffusion is set).')
+args.add_argument('--ae_checkpoint_path', type=str, default=None, help='Path to the AE model checkpoint .pth (required if --latent_diffusion is set).')
+
 args.add_argument('--exp_name', type=str, default=None) # will be auto generated if not provided
 args.add_argument('--image_size', type=int, default=256)
 args.add_argument('--sample_every', type=int, default=1000,         help='Generate test samples every n steps')
