@@ -326,7 +326,7 @@ class GaussianDiffusion(nn.Module):
         return img
     
     # @torch.no_grad()
-    def ddim_sample(self, params, shape, cond_scale = 3., noise=None, classes=None, conditioning_override=None, clip_denoised = True, **kwargs):
+    def ddim_sample(self, params, shape, cond_scale = 3., noise=None, classes=None, conditioning_override=None, clip_denoised = True, return_latent=False, **kwargs):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
 
         times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
@@ -373,14 +373,19 @@ class GaussianDiffusion(nn.Module):
             
             ctr += 1
         
-        img = unnormalize_to_zero_to_one(img)
-        return img
+        # return raw latent if requested, otherwise normalize to [0, 1] image
+        if return_latent:
+            return img # TODO: what range is this latent in?
+        else:
+            img = unnormalize_to_zero_to_one(img)
+            return img
 
     @torch.no_grad()
-    def sample(self, params, cond_scale = 3., classes=None, **kwargs):
-        batch_size, image_size, channels = params.shape[0], self.image_size, self.channels
+    def sample(self, params, cond_scale = 3., classes=None, return_latent=False, **kwargs):
+        batch_size = params.shape[0] if params is not None else classes.shape[0]
+        image_size, channels = self.image_size, self.channels
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
-        return sample_fn(params, (batch_size, channels, image_size, image_size), cond_scale, classes=classes, **kwargs)
+        return sample_fn(params, (batch_size, channels, image_size, image_size), cond_scale, classes=classes, return_latent=return_latent, **kwargs)
 
     def offset_noise(self, x):
         return torch.randn_like(x) + 0.1 * torch.randn(x.shape[0], x.shape[1], 1, 1).to(x.device)
@@ -471,10 +476,14 @@ def create_diffusion_model(config):
     nparams = len(noise_config.param_names) # number of noise parameters
     nclasses = len(noise_config.noise_types) # number of noise classes
     
+    # determine input channels based on latent diffusion mode
+    input_channels = 3 if hasattr(config, 'latent_diffusion') and config.latent_diffusion else 1
+
+        
     model = Unet(
         dim=model_config['unet_dim'],
         dim_mults=model_config['unet_ch_mult'],
-        channels=1, # grayscale
+        channels=input_channels,
         cond_dim=model_config['cond_dim'],
         nclasses=nclasses,
         nparams=nparams,

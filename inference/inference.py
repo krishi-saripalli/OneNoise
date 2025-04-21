@@ -2,15 +2,16 @@ import os
 import math
 import torch
 import random
+import torch.nn.functional as F
 
 from ema_pytorch import EMA
 from inference.inference_helpers import slerp
-from network.diffusion import load_diffusion_model
+from network.diffusion import load_diffusion_model, extract
 from torchvision.utils import save_image, make_grid
 from torchvision.io import read_image
-from utils.helpers import seed_everything
+from utils.helpers import seed_everything, count_parameters, load_infd_ae_components
 from scipy.ndimage import distance_transform_edt
-from network.helpers import exists
+from network.helpers import exists, default, identity
 
 from config.noise_config import noise_types, noise_aliases, param_names, ntype_to_params, ntype_to_params_map
 
@@ -85,9 +86,27 @@ def default(val, d):
         return val
     return d
 
+@torch.no_grad()
+def decode_latent(latent, decoder, renderer):
+    """Decodes a latent tensor to an image using the pre-trained INFD decoder and renderer."""
+    if decoder is None or renderer is None:
+        raise ValueError("Decoder and Renderer must be provided for latent decoding.")
+    # Assuming latent is in [-1, 1] range, and decoder/renderer output [0, 1] image
+    features = decoder(latent)
+    img = renderer(features)
+    img = img.clamp(0., 1.) # Ensure output is in [0, 1]
+    return img
+
 class Inference():
-    def __init__(self, config, model=None, device=None, save_dir=None, seed=None) -> None:
+    def __init__(self, config, model=None, device=None, save_dir=None, seed=None,
+                 is_latent_diffusion=False, ae_decoder=None, ae_renderer=None) -> None:
         self.config = config
+        self.is_latent_diffusion = is_latent_diffusion
+        self.infd_decoder = infd_decoder
+        self.infd_renderer = infd_renderer
+
+        if self.is_latent_diffusion and (self.infd_decoder is None or self.infd_renderer is None):
+            raise ValueError("Inference created in latent mode, but infd_decoder or infd_renderer is missing.")
 
         # number of noise types and parameters:
         self.num_types = len(noise_types)
@@ -107,13 +126,27 @@ class Inference():
 
         self.emb_dim = self.model.model.cond_dim
 
-        if not exists(save_dir):
-            os.makedirs(os.path.join(config.out_dir, config.exp_name, 'out'), exist_ok=True)
-        self.save_dir = default(save_dir, lambda x: os.path.join(config.out_dir, config.exp_name, 'out', x))
+        self.out_dir = None
+        if self.config.exp_name is not None:
+            self.out_dir = os.path.join(config.out_dir, config.exp_name, 'out')
+            os.makedirs(self.out_dir, exist_ok=True)
+        self.save_dir = default(save_dir, lambda x: os.path.join(self.out_dir, x) if self.out_dir else x)
 
         if exists(seed):
             seed_everything(seed)
     
+    def sample(self, params, classes, cond_scale=3., noise=None, **kwargs):
+        params, classes = params.to(self.dev), classes.to(self.dev)
+        if noise is not None: noise = noise.to(self.dev)
+
+        output = self.model.sample(params, cond_scale=cond_scale, classes=classes, noise=noise,
+                                    return_latent=self.is_latent_diffusion, **kwargs) 
+
+        if self.is_latent_diffusion:
+            return decode_latent(output, self.infd_decoder, self.infd_renderer)
+        else:
+            return output
+
     def generate(self, sbsparams, classes, class_emb=None, noise=None, filename=None):
         '''
         The primary function for generating samples from the model.
@@ -246,6 +279,7 @@ class Inference():
 
         return img
 
+    #TODO: figure out if anything needs to change here for latent diffusion
     def slerp_horizontal(self, dict1=None, dict2=None, H=256, W=512, filename=None):
         '''
         Generates a horizontal blend between two noise types.
@@ -329,6 +363,7 @@ class Inference():
         img = self.generate(sbsparams=sbsparams, classes=classes, filename=filename)
         return img
 
+    # TODO: do need to come up with a way of doing this for latent diffusion?
     def random_class_interpolations(self, H, W, nimg=16, filename=None):
         '''
         Calls `slerp_horizontal` with random noise types and parameters.

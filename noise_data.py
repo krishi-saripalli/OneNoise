@@ -151,7 +151,6 @@ class HDF5Dataset(Dataset):
             # look for all files : noise_separate_ptX.hdf5
             ds_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_separate') and f.endswith('.hdf5')]
 
-        #TODO: when the latent dataset is created, we need to make sure we have the same metadata as the image dataset
         datapacks = [h5py.File(os.path.join(data_dir, f), 'r') for f in ds_list]
         nimages_per_type = datapacks[0].attrs['num_images_per_type'] * len(datapacks)
         nimages = len(noise_types) * nimages_per_type

@@ -2,12 +2,18 @@ import json
 import math
 import torch
 import wandb
+import os
+import sys
+import yaml
 
 from pathlib import Path
 from tqdm.auto import tqdm
 from ema_pytorch import EMA
 from accelerate import Accelerator
 from torchvision.utils import save_image, make_grid
+
+# Import helpers from utils
+from utils.helpers import load_config_recursive, dict_to_namespace, load_infd_ae_components
 
 from inference.inference import Inference
 from inference.example_noises import horizontal_blends, vertical_blends
@@ -39,6 +45,9 @@ class Trainer(object):
         super().__init__()
         
         self.config = config
+        self.is_latent_diffusion = config.latent_diffusion
+        self.infd_decoder = None
+        self.infd_renderer = None
 
         assert precision in ['fp32', 'fp16', 'bf16']
 
@@ -51,6 +60,15 @@ class Trainer(object):
             #     InitProcessGroupKwargs(timeout=3600) # try to avoid strange timeout errors
             # ]
         )
+
+        if self.is_latent_diffusion:
+            self.accelerator.print("INFO: Latent diffusion mode enabled. Loading AE...")
+            # Use the helper function to load AE components
+            self.infd_decoder, self.infd_renderer = load_infd_ae_components(
+                ae_config_path=config.ae_config_path,
+                ae_checkpoint_path=config.ae_checkpoint_path,
+                device=self.accelerator.device
+            )
 
         if self.accelerator.is_main_process:
             wandb.init(
@@ -88,7 +106,10 @@ class Trainer(object):
                 model=self.ema,
                 device=self.accelerator.device,
                 save_dir=None,
-                seed=None
+                seed=None,
+                is_latent_diffusion=self.is_latent_diffusion,
+                infd_decoder=self.infd_decoder, 
+                infd_renderer=self.infd_renderer
             )
 
         self.step = 0

@@ -17,57 +17,11 @@ if project_root not in sys.path:
 import models
 import utils 
 import datasets
+
+# Import helpers from utils instead of defining locally
+from utils.helpers import load_config_recursive, dict_to_namespace 
+
 from OneNoise.noise_data import HDF5Dataset 
-
-def load_config_recursive(path, loaded_files=None):
-    """Loads a YAML config, handling _base_ includes."""
-    if loaded_files is None:
-        loaded_files = set()
-    if not os.path.isabs(path):
-        path = os.path.join(project_root, path)
-
-    if path in loaded_files:
-        return {}
-    loaded_files.add(path)
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Config file not found: {path}")
-
-    with open(path, 'r') as f:
-        cfg = yaml.safe_load(f)
-
-    if cfg is None:
-        return {}
-
-    base_cfg = {}
-    if '_base_' in cfg:
-        bases = cfg['_base_']
-        if isinstance(bases, str):
-            bases = [bases]
-        for base_path in bases:
-            if base_path.startswith('cfgs/'):
-                base_full_path = os.path.normpath(os.path.join(project_root, base_path))
-            else:
-                base_full_path = os.path.normpath(os.path.join(os.path.dirname(path), base_path))
-
-            base_cfg_part = load_config_recursive(base_full_path, loaded_files)
-            base_cfg.update(base_cfg_part)
-        del cfg['_base_']
-
-    base_cfg.update(cfg)
-    return base_cfg
-
-def dict_to_namespace(d):
-    """Recursively converts a dictionary to a namespace."""
-    if isinstance(d, dict):
-        ns = argparse.Namespace()
-        for key, value in d.items():
-            setattr(ns, key, dict_to_namespace(value))
-        return ns
-    elif isinstance(d, list):
-        return [dict_to_namespace(item) for item in d]
-    else:
-        return d
 
 def main(args):
     print(f"Using device: {args.device}")

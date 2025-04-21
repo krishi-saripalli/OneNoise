@@ -63,7 +63,14 @@ args.add_argument('--emb_penalty', type=float, default=0.02,        help='Lambda
 args.add_argument('--precision', type=str, default='fp32',          help='Precision to use during training (fp32, fp16, bf16)')
 args.add_argument('--tf32', type=str2bool, default=False,           help='Use TensorFloat32 for matmuls, recommended if your GPU supports it')
 
+args.add_argument('--noise_types', type=str, nargs='+', default=None, help='List of noise types to train on (overrides config/noise_config.py)')
+
 arguments = args.parse_args()
 
-from config.noise_config import noise_types
-arguments.noise_types = noise_types
+from config.noise_config import noise_types as default_noise_types # Renamed import
+
+if arguments.noise_types is None:
+    print("INFO: Using default noise types from config/noise_config.py")
+    arguments.noise_types = default_noise_types
+else:
+    print(f"INFO: Overriding noise types with: {arguments.noise_types}")
