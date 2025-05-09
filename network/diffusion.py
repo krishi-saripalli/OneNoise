@@ -8,6 +8,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
 
 from einops import reduce
 from tqdm.auto import tqdm
@@ -16,6 +17,7 @@ from collections import namedtuple
 
 from .helpers import default, identity, normalize_to_neg_one_to_one, unnormalize_to_zero_to_one
 from .unet import Unet
+from on_utils.helpers import count_parameters
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 
@@ -443,7 +445,7 @@ class GaussianDiffusion(nn.Module):
         return self.p_losses(img, t, *args, **kwargs), t
     
 def create_diffusion_model(config):
-    from utils.helpers import count_parameters
+    from on_utils.helpers import count_parameters
     from network.unet import Unet
     import config.noise_config as noise_config
 

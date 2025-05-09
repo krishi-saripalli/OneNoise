@@ -9,7 +9,7 @@ from inference.inference_helpers import slerp
 from network.diffusion import load_diffusion_model, extract
 from torchvision.utils import save_image, make_grid
 from torchvision.io import read_image
-from utils.helpers import seed_everything, count_parameters, load_infd_ae_components
+from on_utils.helpers import seed_everything, count_parameters, load_infd_ae_components
 from scipy.ndimage import distance_transform_edt
 from network.helpers import exists, default, identity
 

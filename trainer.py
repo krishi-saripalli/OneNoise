@@ -13,7 +13,7 @@ from accelerate import Accelerator
 from torchvision.utils import save_image, make_grid
 
 # Import helpers from utils
-from utils.helpers import load_config_recursive, dict_to_namespace, load_infd_ae_components
+from on_utils.helpers import load_config_recursive, dict_to_namespace, load_infd_ae_components
 
 from inference.inference import Inference
 from inference.example_noises import horizontal_blends, vertical_blends

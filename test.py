@@ -10,7 +10,7 @@ import yaml
 
 from types import SimpleNamespace
 from torchvision.utils import save_image, make_grid
-from utils.helpers import seed_everything, load_config_recursive, dict_to_namespace, load_infd_ae_components
+from on_utils.helpers import seed_everything, load_config_recursive, dict_to_namespace, load_infd_ae_components
 
 from inference.inference import Inference
 from inference.example_noises import horizontal_blends
