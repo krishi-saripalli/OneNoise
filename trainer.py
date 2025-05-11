@@ -48,6 +48,7 @@ class Trainer(object):
         self.is_latent_diffusion = config.latent_diffusion
         self.infd_decoder = None
         self.infd_renderer = None
+        self.infd_quantizer = None
 
         assert precision in ['fp32', 'fp16', 'bf16']
 
@@ -64,7 +65,7 @@ class Trainer(object):
         if self.is_latent_diffusion:
             self.accelerator.print("INFO: Latent diffusion mode enabled. Loading AE...")
             # Use the helper function to load AE components
-            self.infd_decoder, self.infd_renderer = load_infd_ae_components(
+            self.infd_decoder, self.infd_renderer, self.infd_quantizer = load_infd_ae_components(
                 ae_config_path=config.ae_config_path,
                 ae_checkpoint_path=config.ae_checkpoint_path,
                 device=self.accelerator.device
@@ -109,7 +110,8 @@ class Trainer(object):
                 seed=None,
                 is_latent_diffusion=self.is_latent_diffusion,
                 infd_decoder=self.infd_decoder, 
-                infd_renderer=self.infd_renderer
+                infd_renderer=self.infd_renderer,
+                infd_quantizer=self.infd_quantizer
             )
 
         self.step = 0
@@ -144,7 +146,7 @@ class Trainer(object):
         else:
             print("INFO: Running in standard (pixel) diffusion mode.")
             data_path = config.data_dir
-            normalize_latents = config.get('normalize_to_neg_one_pos_one', False)
+            normalize_latents = getattr(config, 'normalize_to_neg_one_pos_one', False)
 
         if config.dry_run: # This simulates a small dataset for debugging purposes
             world_size = 4096
@@ -160,7 +162,10 @@ class Trainer(object):
             world_size=world_size,
             is_latent=is_latent_mode,
             normalize_to_neg_one_pos_one=normalize_latents,
-            force_rgb=config.get('force_rgb', False)
+            force_rgb=getattr(config, 'force_rgb', False),
+            z_score_latents=config.z_score_latents,
+            latent_mean=config.latent_mean,
+            latent_std=config.latent_std
         )
 
         self.dl = torch.utils.data.DataLoader(
@@ -305,7 +310,7 @@ class Trainer(object):
 
                             vertical_outs = []
                             for noise1, noise2 in vertical_strips:
-                                vertical_outs += [ self.inference.slerp_mask(mask='./inference/masks/linear-wipe-down.png',
+                                vertical_outs += [ self.inference.slerp_mask(mask='OneNoise/inference/masks/linear-wipe-down.png',
                                                                             blending_factor=1.,
                                                                             dict1=noise1,
                                                                             dict2=noise2,
@@ -316,7 +321,7 @@ class Trainer(object):
 
                             horizontal_outs = []
                             for noise1, noise2 in horizontal_strips:
-                                horizontal_outs += [ self.inference.slerp_mask(mask='./inference/masks/linear-wipe-right.png',
+                                horizontal_outs += [ self.inference.slerp_mask(mask='OneNoise/inference/masks/linear-wipe-right.png',
                                                                             blending_factor=1.,
                                                                             dict1=noise1,
                                                                             dict2=noise2,

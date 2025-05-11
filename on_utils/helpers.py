@@ -124,7 +124,7 @@ def load_infd_ae_components(ae_config_path, ae_checkpoint_path, device):
         device (torch.device): The device to load the components onto.
 
     Returns:
-        tuple: (decoder, renderer) loaded, frozen, and on the specified device.
+        tuple: (decoder, renderer, quantizer) loaded, frozen, and on the specified device.
     """
     print("INFO: Loading INFD AE components...")
     if ae_config_path is None or ae_checkpoint_path is None:
@@ -208,6 +208,14 @@ def load_infd_ae_components(ae_config_path, ae_checkpoint_path, device):
 
     infd_decoder = ae_model.decoder
     infd_renderer = ae_model.renderer
+    infd_quantizer = getattr(ae_model, 'quantizer', None)
+    if infd_quantizer is not None:
+        print("  AE Quantizer found and extracted.")
+        infd_quantizer.to(device)
+        infd_quantizer.eval()
+        infd_quantizer.requires_grad_(False)
+    else:
+        print("AE Quantizer not found (or not used by this AE model).")
 
     infd_decoder.to(device)
     infd_renderer.to(device)
@@ -223,4 +231,4 @@ def load_infd_ae_components(ae_config_path, ae_checkpoint_path, device):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    return infd_decoder, infd_renderer
+    return infd_decoder, infd_renderer, infd_quantizer

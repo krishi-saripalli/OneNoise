@@ -7,6 +7,25 @@ import torch.nn as nn
 import torchvision.transforms as T
 from torch.utils.data import Dataset
 
+def z_score_normalize_latents_fn(data_tensor: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
+    """Applies Z-score normalization to a latent tensor (C, H, W) or batch (B, C, H, W).
+    Mean and std are expected to be 1D tensors of size C, and will be reshaped for broadcasting.
+    """
+    # Ensure mean and std are correctly shaped for broadcasting (C, 1, 1) or (1, C, 1, 1)
+    if data_tensor.device != mean.device:
+        mean = mean.to(data_tensor.device)
+        std = std.to(data_tensor.device)
+
+    if data_tensor.ndim == 3: # (C, H, W)
+        _mean = mean.view(-1, 1, 1)
+        _std = std.view(-1, 1, 1)
+    elif data_tensor.ndim == 4: # (B, C, H, W)
+        _mean = mean.view(1, -1, 1, 1)
+        _std = std.view(1, -1, 1, 1)
+    else:
+        raise ValueError(f"Input tensor must be 3D or 4D, got {data_tensor.ndim}D")
+    return (data_tensor - _mean) / _std
+
 @torch.no_grad()
 def cutmix_augmentation(image, label, sbs_params, niters, dataset, rot=True):
     '''
@@ -111,7 +130,10 @@ class HDF5Dataset(Dataset):
                  max_samples=None,
                  force_rgb=False,
                  normalize_to_neg_one_pos_one=False,
-                 is_latent=False
+                 is_latent=False,
+                 z_score_latents=False,
+                 latent_mean=None,
+                 latent_std=None
                 ) -> None:
         super().__init__()
         self.H = 256
@@ -127,13 +149,24 @@ class HDF5Dataset(Dataset):
         self.is_latent = is_latent
         self.force_rgb = force_rgb
 
-        # matches the normalization used in the original FFHQ experiments
-        # via transforms.Normalize(0.5, 0.5) in datasets/wrapper_cae.py (around L29).
+        # For image normalization (not latent Z-scoring)
         if normalize_to_neg_one_pos_one:
-            #this is greyscale, so we only need one value in our tuples
             self.normalize_transform = T.Normalize((0.5,), (0.5,))
         else:
             self.normalize_transform = None
+
+        # Z-score normalization for latents
+        self.apply_z_score_to_latents = False # Flag to indicate if Z-scoring should be applied
+        if self.is_latent and z_score_latents:
+            if latent_mean is None or latent_std is None:
+                raise ValueError("latent_mean and latent_std must be provided if z_score_latents is True.")
+            # Store mean and std as tensors directly
+            self.latent_mean_tensor = torch.tensor(latent_mean).float() # 1D tensor of size C
+            self.latent_std_tensor = torch.tensor(latent_std).float()   # 1D tensor of size C
+            # Prevent division by zero for std
+            self.latent_std_tensor[self.latent_std_tensor == 0] = 1e-6
+            self.apply_z_score_to_latents = True
+            print(f"INFO: HDF5Dataset initialized with Z-score normalization for latents. Mean: {self.latent_mean_tensor.tolist()}, Std: {self.latent_std_tensor.tolist()}")
 
         # --- add check for cutmix validity ---
         if self.cutmix > 0 and len(self.noise_types) <= 1:
@@ -205,6 +238,7 @@ class HDF5Dataset(Dataset):
         sbsparams_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_sbsparams') and f.endswith('.hdf5')]
         sbsparams_ds = [h5py.File(os.path.join(data_dir, f), 'r') for f in sbsparams_list]
 
+        # TODO: make a symlink to the sbsparams file in the latent data directory
         self.sbsparams = np.empty((nimages // world_size, sbsparams_ds[0].attrs['num_params']), dtype=np.float32)
         print('Loading noise params...')
         # make sure to use the same ordering of noise types as in the data file:
@@ -231,6 +265,9 @@ class HDF5Dataset(Dataset):
     def __getitem__(self, idx, cutmix_off=False):
         if self.is_latent:
             data_item = self.data[idx]
+            # Apply Z-score normalization if configured
+            if self.apply_z_score_to_latents:
+                data_item = z_score_normalize_latents_fn(data_item, self.latent_mean_tensor, self.latent_std_tensor)
         else:
             data_item = self.augment(self.data[idx])
             data_item = HDF5_batch_preproc(data_item, device='cpu', normalize_fn=self.normalize) # (1, H, W)
@@ -252,5 +289,5 @@ class HDF5Dataset(Dataset):
             # ensure image is 3-channel for compatibility with VQGAN
             if self.force_rgb and data_item.shape[0] == 1: # <-- Check force_rgb flag
                 data_item = data_item.repeat(3, 1, 1)
-
+    
         return data_item, cls_labels, sbsparams

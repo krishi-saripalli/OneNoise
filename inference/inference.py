@@ -13,6 +13,9 @@ from on_utils.helpers import seed_everything, count_parameters, load_infd_ae_com
 from scipy.ndimage import distance_transform_edt
 from network.helpers import exists, default, identity
 
+# Import the INFD utility for creating coord and cell grids
+from utils.geometry import make_coord_cell_grid
+
 from config.noise_config import noise_types, noise_aliases, param_names, ntype_to_params, ntype_to_params_map
 
 def preproc_mask(mask, blending_factor=1.0, H=None, W=None, invert=False):
@@ -87,23 +90,38 @@ def default(val, d):
     return d
 
 @torch.no_grad()
-def decode_latent(latent, decoder, renderer):
-    """Decodes a latent tensor to an image using the pre-trained INFD decoder and renderer."""
+def decode_latent(latent: torch.Tensor, decoder, renderer, quantizer,
+                  target_H: int, target_W: int, device: torch.device):
+    """Decodes a latent tensor to an image using the pre-trained INFD components."""
     if decoder is None or renderer is None:
         raise ValueError("Decoder and Renderer must be provided for latent decoding.")
-    # Assuming latent is in [-1, 1] range, and decoder/renderer output [0, 1] image
-    features = decoder(latent)
-    img = renderer(features)
-    img = img.clamp(0., 1.) # Ensure output is in [0, 1]
+    
+    
+    # VQ layer from INFD section 4.1
+    if quantizer is not None:
+        quantized_latents, _loss, _info = quantizer(latent)
+        latents_for_decoder = quantized_latents
+    else:
+        latents_for_decoder = latent
+    
+    B = latents_for_decoder.shape[0]
+
+    coord, cell = make_coord_cell_grid(shape=(target_H, target_W), device=device, bs=B)
+
+    features = decoder(latents_for_decoder)
+    img = renderer(features, coord=coord, cell=cell) # output is in [-1, 1] range
+    img = (img + 1) / 2
+    img = img.clamp(0., 1.) 
     return img
 
 class Inference():
     def __init__(self, config, model=None, device=None, save_dir=None, seed=None,
-                 is_latent_diffusion=False, ae_decoder=None, ae_renderer=None) -> None:
+                 is_latent_diffusion=False, infd_decoder=None, infd_renderer=None, infd_quantizer=None) -> None:
         self.config = config
         self.is_latent_diffusion = is_latent_diffusion
         self.infd_decoder = infd_decoder
         self.infd_renderer = infd_renderer
+        self.infd_quantizer = infd_quantizer
 
         if self.is_latent_diffusion and (self.infd_decoder is None or self.infd_renderer is None):
             raise ValueError("Inference created in latent mode, but infd_decoder or infd_renderer is missing.")
@@ -136,14 +154,26 @@ class Inference():
             seed_everything(seed)
     
     def sample(self, params, classes, cond_scale=3., noise=None, **kwargs):
-        params, classes = params.to(self.dev), classes.to(self.dev)
-        if noise is not None: noise = noise.to(self.dev)
+        params, classes = params.to(self.dev), classes.to(self.dev) 
+        
+        if noise is not None:
+            noise = noise.to(self.dev)
+            if noise.shape[1] != self.model.channels:
+                raise ValueError(f"Provided noise has {noise.shape[1]} channels, but model expects {self.model.channels} channels.")
 
         output = self.model.sample(params, cond_scale=cond_scale, classes=classes, noise=noise,
                                     return_latent=self.is_latent_diffusion, **kwargs) 
 
         if self.is_latent_diffusion:
-            return decode_latent(output, self.infd_decoder, self.infd_renderer)
+            if self.infd_decoder is None or self.infd_renderer is None:
+                raise ValueError("INFD decoder or renderer is not available for latent diffusion mode in sample method.")
+            
+
+            latents_for_pipeline = output # TODO: do I need to apply tanh here?
+            
+            render_H = self.config.image_size
+            render_W = self.config.image_size
+            return decode_latent(latents_for_pipeline, self.infd_decoder, self.infd_renderer, self.infd_quantizer, render_H, render_W, self.dev)
         else:
             return output
 
@@ -151,35 +181,71 @@ class Inference():
         '''
         The primary function for generating samples from the model.
 
-        sbsparams:              (B, num_params, H, W) tensor of noise parameters
-        classes:                (B, num_types, H, W) tensor of one-hot class labels
+        sbsparams:              (B, num_params, H, W) or (B, num_params) tensor of noise parameters
+        classes:                (B, num_types, H, W) or (B, num_types) tensor of one-hot class labels
         class_emb (optional):   (B, emb_dim, H, W) tensor of class embeddings, if provided `classes` is ignored
-        noise (optional):       (B, 1, H, W) tensor of gaussian noise to start the diffusion process, if not provided random noise is used
+        noise (optional):       (B, self.model.channels, H, W) tensor of gaussian noise, if not provided random noise is used
         filename (optional):    filepath to save the generated image
 
         Returns:
-        img:                    (B, 1, H, W) tensor of generated images
+        img:                    (B, C, H, W) tensor of generated images (decoded if in latent diffusion mode)
         '''
-        H, W = sbsparams.shape[-2:]
         B = sbsparams.shape[0]
+        # H_cond, W_cond are from sbsparams, e.g., 256x256, used for conditioning spatial size
+        if len(sbsparams.shape) == 4: # sbsparams is (B, num_params, H_cond, W_cond)
+            H_cond, W_cond = sbsparams.shape[-2:]
+        elif len(sbsparams.shape) == 2: # sbsparams is (B, num_params)
+            H_cond, W_cond = 256, 256 # Default conditioning spatial size
+        else:
+            raise ValueError(f"sbsparams has an unexpected shape: {sbsparams.shape}")
 
-        if len(sbsparams.shape) == 2:
-            H, W = 256, 256 # default size
+        # Determine the actual noise dimensions for the diffusion process
+        # For latent diffusion, this is self.model.image_size (e.g., 64x64)
+        # For pixel-space diffusion, this is H_cond, W_cond (e.g., 256x256)
+        process_H = self.model.image_size if self.is_latent_diffusion else H_cond
+        process_W = self.model.image_size if self.is_latent_diffusion else W_cond
 
+        actual_noise_to_use: torch.Tensor
         if noise is None:
-            noise = torch.randn(B, 1, H, W, device=self.dev)
+            actual_noise_to_use = torch.randn(B, self.model.channels, process_H, process_W, device=self.dev)
+        else:
+            # Validate channel dimension of provided noise
+            if noise.shape[1] != self.model.channels:
+                raise ValueError(f"Provided noise has {noise.shape[1]} channels, but model expects {self.model.channels} channels.")
+            
+            # Validate batch size
+            if noise.shape[0] != B:
+                raise ValueError(f"Provided noise batch size {noise.shape[0]} inconsistent with sbsparams batch size {B}.")
+
+            # If spatial dimensions of provided noise don't match process_H, process_W, resize it.
+            # This handles the case where full_grid provides noise at (256,256) but latent process needs (64,64)
+            if noise.shape[2] != process_H or noise.shape[3] != process_W:
+                # print(f"Warning: Provided noise spatial dimensions ({noise.shape[2]},{noise.shape[3]}) mismatch process dimensions ({process_H},{process_W}). Resizing.")
+                actual_noise_to_use = F.interpolate(noise, size=(process_H, process_W), mode='bilinear', align_corners=False, antialias=True)
+            else:
+                actual_noise_to_use = noise
         
-        img = self.model.ddim_sample_fast(
+        output_from_sampler = self.model.ddim_sample_fast(
             params=sbsparams,
             classes=classes,
-            noise=noise,
+            noise=actual_noise_to_use, # This noise now has correct spatial dimensions for the U-Net
             class_emb=class_emb
         )
 
-        if exists(filename):
-            save_image(img, self.save_dir(f'{filename}.png'))
+        if self.is_latent_diffusion:
+            if self.infd_decoder is None or self.infd_renderer is None:
+                raise ValueError("INFD decoder or renderer is not available for latent diffusion mode in generate method.")
+            
+            latents_for_pipeline = output_from_sampler
 
-        return img
+            img_final = decode_latent(latents_for_pipeline, self.infd_decoder, self.infd_renderer, self.infd_quantizer, H_cond, W_cond, self.dev)
+        else:
+            img_final = output_from_sampler
+
+        if exists(filename):
+            save_image(img_final, self.save_dir(f'{filename}.png'))
+
+        return img_final
 
     def get_class_embedding(self, dict_or_idx):
         '''
@@ -204,7 +270,7 @@ class Inference():
 
         B = 2 # Batch size, TODO: make this a parameter
 
-        noise = torch.randn(num_samples, 1, H, W).repeat(self.num_types, 1, 1, 1).to(self.dev)
+        noise = torch.randn(num_samples, self.model.channels, H, W).repeat(self.num_types, 1, 1, 1).to(self.dev)
 
         all_sbsparams = []
         all_cls_idx = []
@@ -363,18 +429,22 @@ class Inference():
         img = self.generate(sbsparams=sbsparams, classes=classes, filename=filename)
         return img
 
-    # TODO: do need to come up with a way of doing this for latent diffusion?
     def random_class_interpolations(self, H, W, nimg=16, filename=None):
         '''
         Calls `slerp_horizontal` with random noise types and parameters.
+        If only one noise type is available, it interpolates between random parameters of that single type.
         '''
 
         imgs = []
         for i in range(nimg):
             ntype1 = random.choice(noise_types)
-            ntype2 = random.choice(noise_types)
-            while ntype1 == ntype2:
+            
+            if len(noise_types) > 1:
                 ntype2 = random.choice(noise_types)
+                while ntype1 == ntype2:
+                    ntype2 = random.choice(noise_types)
+            else:
+                ntype2 = ntype1
 
             imgs += [self.slerp_horizontal(
                 sample_parameters(ntype1),

@@ -1,4 +1,16 @@
 import os
+import sys
+
+#TODO: this is ugly, need a better way to do this
+# Add INFD project root to sys.path to allow imports like utils.geometry
+# This assumes OneNoise/train.py is located at <project_root>/OneNoise/train.py
+_one_noise_train_py_file_path = os.path.abspath(__file__)
+_one_noise_dir_path = os.path.dirname(_one_noise_train_py_file_path)
+_infd_project_root_path = os.path.dirname(_one_noise_dir_path)
+
+if _infd_project_root_path not in sys.path:
+    sys.path.insert(0, _infd_project_root_path)
+
 import torch
 
 from trainer import Trainer
@@ -11,6 +23,11 @@ def run(config):
     if config.tf32:
         torch.set_float32_matmul_precision('high')
         torch.backends.cuda.matmul.allow_tf32 = True 
+
+    if config.latent_diffusion:
+        config.latent_size = 64
+        config.image_size = config.latent_size  # "image" size, just to satisfy the diffusion.py assertion
+        config.output_size = 256 
 
     diffusion = create_diffusion_model(config)
 

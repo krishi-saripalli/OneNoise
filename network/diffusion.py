@@ -21,6 +21,16 @@ from on_utils.helpers import count_parameters
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 
+# Z-score denormalization function
+def z_score_denormalize_latents_fn(data_tensor: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
+    """Applies Z-score denormalization to a latent tensor (C, H, W) or batch (B, C, H, W).
+    Mean and std are expected to be appropriately shaped for broadcasting (e.g., (C,1,1) or (1,C,1,1) by the caller).
+    """
+    if data_tensor.device != mean.device:
+        mean = mean.to(data_tensor.device)
+        std = std.to(data_tensor.device)
+    return (data_tensor * std) + mean
+
 def extract(a, t, x_shape):
     b, *_ = t.shape
     out = a.gather(-1, t)
@@ -89,7 +99,10 @@ class GaussianDiffusion(nn.Module):
         min_snr_loss_weight = False,
         min_snr_gamma = 5,
         schedule_fn_kwargs = dict(),
-        auto_normalize = True
+        auto_normalize = True,
+        z_score_latents = False,
+        latent_mean = None,
+        latent_std = None
     ):
         super().__init__()
         assert not (type(self) == GaussianDiffusion and model.channels != model.out_dim)
@@ -99,6 +112,7 @@ class GaussianDiffusion(nn.Module):
         self.self_condition = self.model.self_condition
 
         self.image_size = image_size
+        print(f"INFO: Image size: {self.image_size}")
 
         self.objective = objective
 
@@ -169,6 +183,19 @@ class GaussianDiffusion(nn.Module):
         self.normalize = normalize_to_neg_one_to_one if auto_normalize else identity
         self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else identity
         
+        # Z-score denormalization for latents
+        self.perform_z_score_denormalize = False # Flag
+        if z_score_latents and auto_normalize == False: # Only makes sense if not using [-1,1] normalization
+            if latent_mean is None or latent_std is None:
+                raise ValueError("latent_mean and latent_std must be provided to GaussianDiffusion if z_score_latents is True and auto_normalize is False.")
+            # Register as buffers so they are moved to the correct device with the model
+            # These buffers will be shaped (C, 1, 1)
+            self.register_buffer('latent_mean_buffer', torch.tensor(latent_mean).float().view(-1, 1, 1))
+            self.register_buffer('latent_std_buffer', torch.tensor(latent_std).float().view(-1, 1, 1))
+            # Ensure std_buffer is safe for multiplication (though it's generally safe)
+            self.latent_std_buffer[self.latent_std_buffer == 0] = 1e-6
+            self.perform_z_score_denormalize = True
+       
         # loss weight
         snr = alphas_cumprod / (1 - alphas_cumprod)
 
@@ -279,7 +306,9 @@ class GaussianDiffusion(nn.Module):
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'sampling loop time step', total = self.num_timesteps):
             img, _ = self.p_sample(img, t, params, cond_scale, classes=classes, **kwargs)
 
-        img = unnormalize_to_zero_to_one(img)
+        img = self.unnormalize(img)
+        if self.perform_z_score_denormalize:
+            img = z_score_denormalize_latents_fn(img, self.latent_mean_buffer, self.latent_std_buffer)
         return img
 
     @torch.no_grad()
@@ -302,7 +331,9 @@ class GaussianDiffusion(nn.Module):
             
             ctr += 1
         
-        img = unnormalize_to_zero_to_one(img)
+        img = self.unnormalize(img)
+        if self.perform_z_score_denormalize:
+            img = z_score_denormalize_latents_fn(img, self.latent_mean_buffer, self.latent_std_buffer)
         return img
 
     # @torch.compile()
@@ -377,9 +408,13 @@ class GaussianDiffusion(nn.Module):
         
         # return raw latent if requested, otherwise normalize to [0, 1] image
         if return_latent:
-            return img # TODO: what range is this latent in?
+            if self.perform_z_score_denormalize:
+                img = z_score_denormalize_latents_fn(img, self.latent_mean_buffer, self.latent_std_buffer)
+            return img 
         else:
-            img = unnormalize_to_zero_to_one(img)
+            img = self.unnormalize(img) 
+            if self.perform_z_score_denormalize:
+                img = z_score_denormalize_latents_fn(img, self.latent_mean_buffer, self.latent_std_buffer)
             return img
 
     @torch.no_grad()
@@ -500,7 +535,11 @@ def create_diffusion_model(config):
         timesteps = config.train_timesteps,
         loss_type = config.loss_fn,
         sampling_timesteps=config.sample_timesteps,
-        objective=config.objective
+        objective=config.objective,
+        auto_normalize=config.auto_normalize_latents,
+        z_score_latents=config.z_score_latents,
+        latent_mean=config.latent_mean,
+        latent_std=config.latent_std
     )
 
     print('Num model parameters', count_parameters(diffusion))

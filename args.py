@@ -65,6 +65,14 @@ args.add_argument('--tf32', type=str2bool, default=False,           help='Use Te
 
 args.add_argument('--noise_types', type=str, nargs='+', default=None, help='List of noise types to train on (overrides config/noise_config.py)')
 
+# Diffusion model specific settings
+args.add_argument('--auto_normalize_latents', type=str2bool, default=True, help='Automatically normalize input latents/images to [-1, 1] in diffusion model. Set to False for latent diffusion if latents have their own range.')
+
+# Z-score normalization for latents
+args.add_argument('--z_score_latents', type=str2bool, default=False, help='Apply Z-score normalization to latents in the dataloader. Requires --latent_mean and --latent_std if default hardcoded stats are not desired.')
+args.add_argument('--latent_mean', type=float, nargs='+', default=[0.2027290016412735, -0.04339390993118286, 0.3389289081096649], help='Per-channel mean for Z-scoring latents. Used if --z_score_latents is True.')
+args.add_argument('--latent_std', type=float, nargs='+', default=[1.541712, 1.663003, 0.951473], help='Per-channel standard deviation for Z-scoring latents. Used if --z_score_latents is True.')
+
 arguments = args.parse_args()
 
 from config.noise_config import noise_types as default_noise_types # Renamed import
