@@ -91,11 +91,19 @@ def default(val, d):
 
 @torch.no_grad()
 def decode_latent(latent: torch.Tensor, decoder, renderer, quantizer,
-                  target_H: int, target_W: int, device: torch.device):
-    """Decodes a latent tensor to an image using the pre-trained INFD components."""
+                  target_H: int, target_W: int, device: torch.device,
+                  substance_params = None,
+                  classes = None):
+    """Decodes a latent tensor to an image using the pre-trained INFD components.
+
+    The decoder can optionally receive spatial conditioning in the form of
+    `substance_params` (noise parameter grid) and `classes` (one-hot class grid).
+    These are the exact tensors that the diffusion U-Net was conditioned on
+    earlier in the pipeline, so passing them through ensures the SPADE blocks
+    inside the decoder receive identical information.
+    """
     if decoder is None or renderer is None:
         raise ValueError("Decoder and Renderer must be provided for latent decoding.")
-    
     
     # VQ layer from INFD section 4.1
     if quantizer is not None:
@@ -108,10 +116,13 @@ def decode_latent(latent: torch.Tensor, decoder, renderer, quantizer,
 
     coord, cell = make_coord_cell_grid(shape=(target_H, target_W), device=device, bs=B)
 
-    features = decoder(latents_for_decoder)
-    img = renderer(features, coord=coord, cell=cell) # output is in [-1, 1] range
+    # Forward conditioning to the decoder if provided
+    features = decoder(latents_for_decoder,
+                       classes=classes,
+                       substance_params=substance_params)
+    img = renderer(features, coord=coord, cell=cell)  # output in [-1, 1]
     img = (img + 1) / 2
-    img = img.clamp(0., 1.) 
+    img = img.clamp(0., 1.)
     return img
 
 class Inference():
@@ -173,7 +184,18 @@ class Inference():
             
             render_H = self.config.image_size
             render_W = self.config.image_size
-            return decode_latent(latents_for_pipeline, self.infd_decoder, self.infd_renderer, self.infd_quantizer, render_H, render_W, self.dev)
+            # Pass the same conditioning used by the diffusion model to the decoder
+            return decode_latent(
+                latents_for_pipeline,
+                self.infd_decoder,
+                self.infd_renderer,
+                self.infd_quantizer,
+                render_H,
+                render_W,
+                self.dev,
+                substance_params=params,
+                classes=classes,
+            )
         else:
             return output
 
@@ -238,7 +260,17 @@ class Inference():
             
             latents_for_pipeline = output_from_sampler
 
-            img_final = decode_latent(latents_for_pipeline, self.infd_decoder, self.infd_renderer, self.infd_quantizer, H_cond, W_cond, self.dev)
+            img_final = decode_latent(
+                latents_for_pipeline,
+                self.infd_decoder,
+                self.infd_renderer,
+                self.infd_quantizer,
+                H_cond,
+                W_cond,
+                self.dev,
+                substance_params=sbsparams,
+                classes=classes,
+            )
         else:
             img_final = output_from_sampler
 
@@ -318,6 +350,7 @@ class Inference():
         filename:           output filepath
         '''
         dist = preproc_mask(mask, blending_factor=blending_factor, H=H, W=W, invert=False) # distance transform (1, H, W)
+        print(f"[Inference.slerp_mask] dist tensor min: {dist.min().item():.4f}, max: {dist.max().item():.4f}, mean: {dist.mean().item():.4f}, shape: {dist.shape}") # DEBUG PRINT
 
         sbsparams1, _ = dict2cond(dict1, H, W)
         sbsparams2, _ = dict2cond(dict2, H, W)

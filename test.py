@@ -8,6 +8,17 @@ import argparse
 import sys
 import yaml
 
+
+#TODO: hacky, need to come up with a better way to do this
+# Add project root to sys.path to allow finding the 'utils' module
+# Get the directory of the current script (OneNoise/test.py)
+# os.path.dirname(os.path.abspath(__file__)) would be /path/to/BVC/infd/OneNoise
+# The project root is one level up from the 'OneNoise' directory.
+current_script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_script_dir, '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from types import SimpleNamespace
 from torchvision.utils import save_image, make_grid
 from on_utils.helpers import seed_everything, load_config_recursive, dict_to_namespace, load_infd_ae_components
@@ -75,40 +86,71 @@ with open(config_path, 'r') as f:
 
 infd_decoder = None
 infd_renderer = None
+infd_quantizer = None
 if config.latent_diffusion:
     print("INFO: Latent diffusion mode enabled. Loading INFD AE...")
     # Use the helper function to load AE components
-    infd_decoder, infd_renderer = load_infd_ae_components(
+    infd_decoder, infd_renderer, infd_quantizer = load_infd_ae_components(
         ae_config_path=config.ae_config_path,
         ae_checkpoint_path=config.ae_checkpoint_path,
         device=device # Use the device specified by args
     )
+    if infd_quantizer is None:
+        print("WARNING: Latent diffusion enabled but INFD quantizer was not loaded. " +
+              "This might be an issue if the diffusion model expects quantized latents.")
 
 inf = Inference(config, device=device, 
                 is_latent_diffusion=config.latent_diffusion,
                 infd_decoder=infd_decoder,
-                infd_renderer=infd_renderer)
+                infd_renderer=infd_renderer,
+                infd_quantizer=infd_quantizer)
 
 # Optionally you can compile the model for faster inference. 
 # This has some initial overhead but it's faster for repeated forward calls.
 # inf.model.model.forward = torch.compile(inf.model.model.forward)
 
-# Image size:
+# Image size for final output by INFD AE:
 H = 256
-W = 1024
+W = 256 # Changed from 1024 to 256, then to 512, now trying 256 again alongside smaller latent size
 
 # Create a smooth linear gradient for noise blending:
-mask = smooth_linear_gradient(W=W, kernel_width=128, blur_iter=200_000)
-mask = mask.unsqueeze(0).unsqueeze(0).expand(1, H, W)
-mask = mask.to(device)
+#mask_raw = smooth_linear_gradient(W=W, kernel_width=128, blur_iter=200_000)
+mask_raw = smooth_linear_gradient(W=W, kernel_width=(W // 2), blur_iter=100)
+print(f"[test.py] mask_raw (from smooth_linear_gradient) min: {mask_raw.min().item():.4f}, max: {mask_raw.max().item():.4f}, mean: {mask_raw.mean().item():.4f}, shape: {mask_raw.shape}") # DEBUG PRINT
 
-cond_pairs = horizontal_blends()
-cond_pairs = [cond_pairs[i] for i in [0,7,6]] # grab a few pairs of noise configurations
+
+mask = "/users/ksaripal/BVC/infd/OneNoise/inference/masks/axe.png" # Expands to (1, 1, H, W)
+
+
+voronoi_params1_start = {
+    'scale': 1.0, 
+    'distortion_intensity': 0.0, 
+    'distortion_scale_multiplier': 0.0
+}
+voronoi_params1_end = {
+    'scale': 0.0, 
+    'distortion_intensity': 0.0, 
+    'distortion_scale_multiplier': 1.0
+}
+
+
+cond_pairs = [
+    (
+        {'cls': 'voro', 'sbsparams': voronoi_params1_start},
+        {'cls': 'voro', 'sbsparams': voronoi_params1_end}
+    )
+]
+# cond_pairs = horizontal_blends() # Old way, using multiple unknown classes
+# cond_pairs = [cond_pairs[i] for i in [0,7,6]] # grab a few pairs of noise configurations
+
 imgs = []
 with torch.no_grad():
     for i, (c1, c2) in enumerate(cond_pairs):
+        print(f"--- Interpolating Pair {i+1} ---")
+        print(f"c1 cls: {c1.get('cls')}, sbsparams: {c1.get('sbsparams')}")
+        print(f"c2 cls: {c2.get('cls')}, sbsparams: {c2.get('sbsparams')}")
         img = inf.slerp_mask(mask=mask,
-                                blending_factor=1.,
+                                blending_factor=0.0,
                                 dict1=c1,
                                 dict2=c2,
                                 H=H,

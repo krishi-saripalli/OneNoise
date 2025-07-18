@@ -21,7 +21,6 @@ from on_utils.helpers import count_parameters
 
 ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 
-# Z-score denormalization function
 def z_score_denormalize_latents_fn(data_tensor: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
     """Applies Z-score denormalization to a latent tensor (C, H, W) or batch (B, C, H, W).
     Mean and std are expected to be appropriately shaped for broadcasting (e.g., (C,1,1) or (1,C,1,1) by the caller).
@@ -192,7 +191,6 @@ class GaussianDiffusion(nn.Module):
             # These buffers will be shaped (C, 1, 1)
             self.register_buffer('latent_mean_buffer', torch.tensor(latent_mean).float().view(-1, 1, 1))
             self.register_buffer('latent_std_buffer', torch.tensor(latent_std).float().view(-1, 1, 1))
-            # Ensure std_buffer is safe for multiplication (though it's generally safe)
             self.latent_std_buffer[self.latent_std_buffer == 0] = 1e-6
             self.perform_z_score_denormalize = True
        

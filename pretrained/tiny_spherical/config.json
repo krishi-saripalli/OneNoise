@@ -1,30 +1,11 @@
 {
-  "inference": false,
-  "model_config": "tiny",
+  "inference": true,
+  "model_config": "medium",
   "noise_types": [
-    "cells_4",
-    "cells_1",
-    "voronoi",
-    "microscope_view",
-    "grunge_galvanic_small",
-    "liquid",
-    "clouds_3",
-    "bnw_spots_1",
-    "grunge_leaky_paint",
-    "grunge_rust_fine",
-    "grunge_map_002",
-    "grunge_damas",
-    "grunge_map_005",
-    "messy_fibers_3",
-    "perlin_noise",
-    "gaussian_noise",
-    "clouds_2",
-    "clouds_1",
-    "gabor",
-    "phasor"
+    "voronoi"
   ],
   "out_dir": "./results",
-  "image_size": 256,
+  "image_size": 64, 
   "num_images": 1000,
   "save_every": 10000,
   "sample_every": 2000,
@@ -42,7 +23,19 @@
   "objective": "pred_noise",
   "num_samples": 16,
   "cutmix": 1,
-  "cutmix_prob": 0.5,
+  "cutmix_prob": 0.0,
   "cutmix_rot": true,
-  "emb_penalty": 0.02
+  "emb_penalty": 0.02,
+  "auto_normalize_latents": false,
+  "z_score_latents": true,
+  "latent_mean": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "latent_std": [
+    1.0,
+    1.0,
+    1.0
+  ]
 }

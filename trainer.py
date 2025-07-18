@@ -148,12 +148,14 @@ class Trainer(object):
             data_path = config.data_dir
             normalize_latents = getattr(config, 'normalize_to_neg_one_pos_one', False)
 
+        substance_params_dir = getattr(config, 'substance_params_dir', None)
         if config.dry_run: # This simulates a small dataset for debugging purposes
             world_size = 4096
 
         self.ds = HDF5Dataset(
             noise_types=config.noise_types,
             data_dir=data_path, 
+            substance_params_dir=substance_params_dir,
             augment=True,
             cutmix=config.cutmix, 
             cutmix_prob=config.cutmix_prob,

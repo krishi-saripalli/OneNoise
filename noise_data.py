@@ -133,7 +133,8 @@ class HDF5Dataset(Dataset):
                  is_latent=False,
                  z_score_latents=False,
                  latent_mean=None,
-                 latent_std=None
+                 latent_std=None,
+                 substance_params_dir=None
                 ) -> None:
         super().__init__()
         self.H = 256
@@ -160,10 +161,8 @@ class HDF5Dataset(Dataset):
         if self.is_latent and z_score_latents:
             if latent_mean is None or latent_std is None:
                 raise ValueError("latent_mean and latent_std must be provided if z_score_latents is True.")
-            # Store mean and std as tensors directly
-            self.latent_mean_tensor = torch.tensor(latent_mean).float() # 1D tensor of size C
-            self.latent_std_tensor = torch.tensor(latent_std).float()   # 1D tensor of size C
-            # Prevent division by zero for std
+            self.latent_mean_tensor = torch.tensor(latent_mean).float() 
+            self.latent_std_tensor = torch.tensor(latent_std).float()
             self.latent_std_tensor[self.latent_std_tensor == 0] = 1e-6
             self.apply_z_score_to_latents = True
             print(f"INFO: HDF5Dataset initialized with Z-score normalization for latents. Mean: {self.latent_mean_tensor.tolist()}, Std: {self.latent_std_tensor.tolist()}")
@@ -235,8 +234,14 @@ class HDF5Dataset(Dataset):
         self.data_max = self.data.max().to(dtype=torch.float) / 255.
 
         # Labels (already preprocessed):
-        sbsparams_list = [f for f in os.listdir(data_dir) if f.startswith('noise_rebuttal_sbsparams') and f.endswith('.hdf5')]
-        sbsparams_ds = [h5py.File(os.path.join(data_dir, f), 'r') for f in sbsparams_list]
+        # For latent mode, substance parameters might be in a different directory
+        substance_params_load_dir = substance_params_dir if substance_params_dir is not None else data_dir
+        sbsparams_list = [f for f in os.listdir(substance_params_load_dir) if f.startswith('noise_rebuttal_sbsparams') and f.endswith('.hdf5')]
+        
+        if not sbsparams_list:
+            raise FileNotFoundError(f"No substance parameters files ('noise_rebuttal_sbsparams*.hdf5') found in {substance_params_load_dir}.")
+        
+        sbsparams_ds = [h5py.File(os.path.join(substance_params_load_dir, f), 'r') for f in sbsparams_list]
 
         # TODO: make a symlink to the sbsparams file in the latent data directory
         self.sbsparams = np.empty((nimages // world_size, sbsparams_ds[0].attrs['num_params']), dtype=np.float32)
@@ -289,5 +294,5 @@ class HDF5Dataset(Dataset):
             # ensure image is 3-channel for compatibility with VQGAN
             if self.force_rgb and data_item.shape[0] == 1: # <-- Check force_rgb flag
                 data_item = data_item.repeat(3, 1, 1)
-    
+
         return data_item, cls_labels, sbsparams
