@@ -97,12 +97,11 @@ class LatentDecoder:
             latent_np = latents_dataset[self.args.sample_index]
 
         latent_tensor = torch.from_numpy(latent_np).float().unsqueeze(0).to(self.device)
-        if latent_tensor.ndim == 3: # Handle cases where channel dimension might be missing
+        if latent_tensor.ndim == 3:
              latent_tensor = latent_tensor.unsqueeze(1)
         assert latent_tensor.ndim == 4, "Latent tensor must be 4D (B, C, H, W)."
 
         with torch.no_grad():
-            # The decoding pipeline must match the training process exactly.
             latents_conv = self.decoder[0](latent_tensor)
             latents_post_q = self.quantizer(latents_conv)[0] if self.quantizer else latents_conv
             
@@ -116,7 +115,6 @@ class LatentDecoder:
             reconstructed_image = (reconstructed_image + 1) / 2
             reconstructed_image = reconstructed_image.clamp(0., 1.)
 
-        # Create output directory if it doesn't exist
         output_dir = os.path.dirname(self.args.output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)

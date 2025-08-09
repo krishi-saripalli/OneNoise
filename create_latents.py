@@ -30,7 +30,7 @@ class LatentGenerator:
     def __init__(self, args):
         self.args = args
         self.cfg_dict = load_config_recursive(args.ae_train_config)
-        self.encoder = self.load_ae_encoder(args)
+        self.encoder = self.load_ae_encoder()
         self.data_loader, self.dataset = self.load_h5_dataset(args, self.cfg_dict)
 
     def generate_latents(self):
@@ -96,6 +96,9 @@ class LatentGenerator:
         is_consistent = all(count == first_count for count in counts_per_type.values())   
         num_images_per_type = first_count
         assert is_consistent, "Inconsistent number of samples per noise type. Cannot save."
+
+        output_dir = os.path.dirname(self.args.output_path)
+        os.makedirs(output_dir, exist_ok=True)
 
         with h5py.File(self.args.output_path, 'w') as f:
             f.attrs['num_images_per_type'] = num_images_per_type

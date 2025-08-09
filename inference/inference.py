@@ -105,22 +105,23 @@ def decode_latent(latent: torch.Tensor, decoder, renderer, quantizer,
     if decoder is None or renderer is None:
         raise ValueError("Decoder and Renderer must be provided for latent decoding.")
     
+    latent_post_conv = decoder[0](latent)
+    
     # VQ layer from INFD section 4.1
     if quantizer is not None:
-        quantized_latents, _loss, _info = quantizer(latent)
+        quantized_latents, _loss, _info = quantizer(latent_post_conv)
         latents_for_decoder = quantized_latents
     else:
-        latents_for_decoder = latent
+        latents_for_decoder = latent_post_conv
     
     B = latents_for_decoder.shape[0]
 
     coord, cell = make_coord_cell_grid(shape=(target_H, target_W), device=device, bs=B)
-
-    # Forward conditioning to the decoder if provided
-    features = decoder(latents_for_decoder,
+    
+    features = decoder[1](latents_for_decoder,
                        classes=classes,
                        substance_params=substance_params)
-    img = renderer(features, coord=coord, cell=cell)  # output in [-1, 1]
+    img = renderer(features, coord=coord, cell=cell)  # renderer output in [-1, 1]
     img = (img + 1) / 2
     img = img.clamp(0., 1.)
     return img
@@ -250,8 +251,8 @@ class Inference():
         output_from_sampler = self.model.ddim_sample_fast(
             params=sbsparams,
             classes=classes,
-            noise=actual_noise_to_use, # This noise now has correct spatial dimensions for the U-Net
-            class_emb=class_emb
+            noise=actual_noise_to_use,
+            class_emb=class_emb,
         )
 
         if self.is_latent_diffusion:
@@ -352,15 +353,18 @@ class Inference():
         dist = preproc_mask(mask, blending_factor=blending_factor, H=H, W=W, invert=False) # distance transform (1, H, W)
         print(f"[Inference.slerp_mask] dist tensor min: {dist.min().item():.4f}, max: {dist.max().item():.4f}, mean: {dist.mean().item():.4f}, shape: {dist.shape}") # DEBUG PRINT
 
-        sbsparams1, _ = dict2cond(dict1, H, W)
-        sbsparams2, _ = dict2cond(dict2, H, W)
+        sbsparams1, classes1 = dict2cond(dict1, H, W)
+        sbsparams2, classes2 = dict2cond(dict2, H, W)
         sbsparams1 = sbsparams1.cuda()
         sbsparams2 = sbsparams2.cuda()
+        classes1 = classes1.cuda()
+        classes2 = classes2.cuda()
         
         cls_emb1 = self.get_class_embedding(dict1) # (1,32)
         cls_emb2 = self.get_class_embedding(dict2) # (1,32)
 
-        sbsparams = sbsparams1 * (1 - dist) + sbsparams2 * dist
+        sbsparams = sbsparams1 * (1 - dist.unsqueeze(1)) + sbsparams2 * dist.unsqueeze(1)
+        classes = classes1 * (1 - dist.unsqueeze(1)) + classes2 * dist.unsqueeze(1)
         
         ts = dist.flatten()
         cls_emb_slerp = slerp(ts, cls_emb1, cls_emb2) # (H*W, 32)
@@ -368,7 +372,7 @@ class Inference():
 
         img = self.generate(
             sbsparams=sbsparams,
-            classes=None,
+            classes=classes,
             class_emb=cls_emb_slerp,
             filename=filename
         )

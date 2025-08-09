@@ -37,6 +37,8 @@ def run(config):
 
     result_dir = os.path.join(config.out_dir, config.exp_name)
 
+    os.makedirs(result_dir, exist_ok=True)
+
     trainer = Trainer(
         diffusion,
         config,
